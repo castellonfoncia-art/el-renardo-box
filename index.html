@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pad Vidéo — sampler YouTube</title>
+<title>El Renardo Box</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <style>
   :root{
@@ -194,7 +194,7 @@
   <header>
     <div class="brand">
       <span class="dot"></span>
-      <h1>Pad Vidéo</h1>
+      <h1>El Renardo Box</h1>
       <span>16 pads · drums · sidechain</span>
     </div>
     <div class="urlbar">
@@ -1402,7 +1402,7 @@
     var blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"});
     var a=document.createElement("a");
     a.href=URL.createObjectURL(blob);
-    a.download="pad-video-"+(state.videoId||"programme")+".json";
+    a.download="el-renardo-box-"+(state.videoId||"programme")+".json";
     a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); },1000);
   });
   $("importBtn").addEventListener("click",function(){ $("fileIn").click(); });

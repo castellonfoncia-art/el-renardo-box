@@ -1,4 +1,4 @@
-# Pad Vidéo
+# El Renardo Box
 
 Sampler de pads pour vidéos YouTube : 16 pads qui sautent chacun à un timestamp de la vidéo,
 une banque de drums synthétisés, un séquenceur et un sidechain réglable.
