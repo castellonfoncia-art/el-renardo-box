@@ -244,6 +244,11 @@
             <input type="range" id="edRate" min="-10" max="10" step="0.1" value="0">
             <span class="mono" id="edRateReal">le lecteur jouera 1,00×</span>
           </div>
+          <div class="ctl" id="edPitchWrap" hidden>
+            <label for="edPitch">Pitch <span class="val" id="edPitchV">0,0 demi-ton</span></label>
+            <input type="range" id="edPitch" min="-12" max="12" step="0.1" value="0">
+            <span class="mono">indépendant de la vitesse</span>
+          </div>
         </div>
         <div class="nudge">
           <button class="btn sm" data-nudge="-1">−1 s</button>
@@ -317,6 +322,26 @@
       </div>
     </section>
   </div>
+
+  <section class="panel">
+    <h3>Source du son — <span id="capMode" style="color:var(--ink-dim)">Lecteur YouTube</span></h3>
+    <div class="tempo">
+      <button class="btn" id="capBtn" type="button">Capturer le son</button>
+      <button class="btn" id="capStop" type="button" hidden>Terminer la capture</button>
+      <div class="ctl" style="flex:0 0 150px">
+        <label for="capSpeed">Vitesse de capture</label>
+        <select id="capSpeed">
+          <option value="1">1× — qualité maximale</option>
+          <option value="2">2× — deux fois plus rapide</option>
+        </select>
+      </div>
+      <button class="btn" id="capClear" type="button" hidden>Vider la mémoire</button>
+      <span class="mono" id="capInfo" style="flex:1 1 260px">
+        Capture le son de l'onglet pour jouer les pads depuis la mémoire :
+        déclenchement instantané, vitesse au dixième, pitch indépendant, sidechain exact.
+      </span>
+    </div>
+  </section>
 
   <section class="panel">
     <h3>Tempo</h3>
@@ -398,6 +423,7 @@
   <footer>
     <b>Pads vidéo</b> 1 2 3 4 / A Z E R / Q S D F / W X C V &nbsp;·&nbsp; <b>Drums</b> G H J K L M<br>
     <b>Sidechain</b> le pad source fait plonger le reste puis le laisse remonter selon la courbe, l'attack et le release choisis.<br>
+    <b>Capturer le son</b> met l'audio de l'onglet en mémoire : les pads deviennent un vrai sampler, sans latence, avec vitesse et pitch libres.<br>
     <b>Les voix de drums sont synthétisées dans l'app</b>, à la manière des boîtes à rythmes analogiques — charge tes propres WAV dans n'importe quel slot si tu as ta banque.
   </footer>
 </div>
@@ -425,7 +451,7 @@
   var DRUM_BASE=100;
 
   function blankPads(){
-    var a=[];for(var i=0;i<16;i++)a.push({t:0,name:"Pad "+(i+1),slice:"",spd:0});return a;
+    var a=[];for(var i=0;i<16;i++)a.push({t:0,name:"Pad "+(i+1),slice:"",spd:0,pit:0});return a;
   }
   var state={
     videoId:"", bank:0, banks:[blankPads(),blankPads(),blankPads(),blankPads()],
@@ -443,7 +469,7 @@
   /* =======================================================================
      2. MOTEUR AUDIO — drums synthétisés + bus sidechain
      ======================================================================= */
-  var ac=null, masterG=null, drumBus=null, drumDuck=null, noiseBuf=null, shaper=null;
+  var ac=null, masterG=null, drumBus=null, drumDuck=null, vidBus=null, vidDuck=null, noiseBuf=null, shaper=null;
   function audio(){
     if(ac) return ac;
     ac=new (window.AudioContext||window.webkitAudioContext)();
@@ -453,6 +479,8 @@
     masterG.connect(comp); comp.connect(ac.destination);
     drumDuck=ac.createGain(); drumDuck.gain.value=1; drumDuck.connect(masterG);
     drumBus=ac.createGain(); drumBus.gain.value=state.drVol; drumBus.connect(drumDuck);
+    vidDuck=ac.createGain(); vidDuck.gain.value=1; vidDuck.connect(masterG);
+    vidBus=ac.createGain();  vidBus.gain.value=state.vidVol; vidBus.connect(vidDuck);
     var n=ac.sampleRate*2, b=ac.createBuffer(1,n,ac.sampleRate), d=b.getChannelData(0);
     for(var i=0;i<n;i++) d[i]=Math.random()*2-1;
     noiseBuf=b;
@@ -638,8 +666,9 @@
   setInterval(function(){
     var g=scGain(performance.now()), tg=state.sc.targets;
     var gv=(tg==="drums")?1:g, gd=(tg==="video")?1:g;
-    if(yt&&yt.setVolume){ try{ yt.setVolume(Math.round(state.vidVol*gv*100)); }catch(e){} }
+    if(yt&&yt.setVolume){ try{ yt.setVolume(capBuf?0:Math.round(state.vidVol*gv*100)); }catch(e){} }
     if(drumDuck) drumDuck.gain.value=gd;
+    if(vidDuck)  vidDuck.gain.value=gv;
     var m=$("scMeter"); if(m) m.style.transform="scaleX("+g.toFixed(3)+")";
   },16);
 
@@ -662,6 +691,120 @@
     x.fillStyle="#8d8f98"; x.font="11px 'IBM Plex Mono', monospace";
     x.fillText(Math.round(span)+" ms", W-72, H-8);
     x.fillText("gain", 8, 14);
+  }
+
+  /* -----------------------------------------------------------------
+     Capture : le son de l'onglet est enregistre dans un tampon memoire.
+     Les pads jouent ensuite depuis ce tampon, plus depuis le lecteur.
+     ----------------------------------------------------------------- */
+  var capBuf=null, capStart=0, capRate=1, capRec=null, capT0=0, capTimer=null;
+
+  function capInfo(msg){ $("capInfo").textContent=msg; }
+  function capState(){
+    var live=!!capBuf;
+    $("capMode").textContent=live?"Mémoire":"Lecteur YouTube";
+    $("capMode").style.color=live?"var(--lcd-ink)":"var(--ink-dim)";
+    $("capClear").hidden=!live;
+    $("edRateReal").hidden=live;
+    $("edPitchWrap").hidden=!live;
+    if(live) capInfo("Son en mémoire : "+capBuf.duration.toFixed(1)+" s captées à partir de "+
+      fmt(capStart)+". Les pads jouent depuis la mémoire, sans latence.");
+  }
+  function startCapture(){
+    if(!yt){ toast("Charge d'abord une vidéo"); return; }
+    if(!navigator.mediaDevices||!navigator.mediaDevices.getDisplayMedia){
+      toast("Ton navigateur ne sait pas partager l'audio d'un onglet. Utilise Chrome."); return; }
+    audio(); if(ac.state==="suspended") ac.resume();
+    capRate=parseFloat($("capSpeed").value)||1;
+    capInfo("Choisis CET onglet et coche « Partager l'audio de l'onglet ».");
+    navigator.mediaDevices.getDisplayMedia({video:true,audio:true}).then(function(stream){
+      var at=stream.getAudioTracks();
+      if(!at.length){
+        stream.getTracks().forEach(function(t){t.stop();});
+        capInfo("Pas d'audio partagé : recommence en cochant « Partager l'audio de l'onglet »."); return;
+      }
+      capStart=Math.max(0,yt.getCurrentTime()||0);
+      var opts={audioBitsPerSecond:256000};
+      try{ capRec=new MediaRecorder(new MediaStream([at[0]]),
+            Object.assign({mimeType:"audio/webm;codecs=opus"},opts)); }
+      catch(e){ capRec=new MediaRecorder(new MediaStream([at[0]]),opts); }
+      var chunks=[];
+      capRec.ondataavailable=function(e){ if(e.data&&e.data.size) chunks.push(e.data); };
+      capRec.onstop=function(){
+        stream.getTracks().forEach(function(t){t.stop();});
+        clearInterval(capTimer); capTimer=null;
+        try{ yt.setPlaybackRate(1); yt.pauseVideo(); }catch(e){}
+        $("capBtn").classList.remove("on"); $("capBtn").textContent="Capturer le son";
+        $("capStop").hidden=true;
+        capInfo("Décodage…");
+        new Blob(chunks,{type:chunks[0]&&chunks[0].type||"audio/webm"}).arrayBuffer()
+          .then(function(ab){ return ac.decodeAudioData(ab); })
+          .then(function(buf){ capBuf=buf; capState(); select(sel);
+            toast("Son en mémoire : "+(buf.duration*capRate).toFixed(0)+" s de vidéo captées"); })
+          .catch(function(){ capInfo("Le décodage a échoué, recommence la capture."); });
+      };
+      try{ yt.setVolume(100); yt.seekTo(capStart,true); yt.setPlaybackRate(capRate); yt.playVideo(); }catch(e){}
+      capRec.start(1000); capT0=performance.now();
+      $("capBtn").classList.add("on"); $("capBtn").textContent="Capture…";
+      $("capStop").hidden=false;
+      capTimer=setInterval(function(){
+        var el=(performance.now()-capT0)/1000;
+        capInfo("Capture en cours : "+(el*capRate).toFixed(0)+" s de vidéo enregistrées. "+
+                "Ne joue pas de pads pendant la capture, ils seraient enregistrés aussi.");
+        if(el>900) stopCapture();
+      },500);
+    }).catch(function(){ capInfo("Capture annulée."); });
+  }
+  function stopCapture(){ if(capRec&&capRec.state!=="inactive") capRec.stop(); }
+  function clearCapture(){
+    capBuf=null; capState();
+    capInfo("Mémoire vidée, les pads repassent par le lecteur YouTube.");
+    select(sel);
+  }
+
+  /* lecture d'un pad depuis le tampon : vitesse libre, pitch independant */
+  var bufVoices=[];
+  function stopBuf(){
+    bufVoices.forEach(function(v){ try{ v.stop(); }catch(e){} });
+    bufVoices=[];
+  }
+  function inBuffer(p){
+    if(!capBuf) return false;
+    var b=(p.t-capStart)/capRate;
+    return b>=0 && b<capBuf.duration-0.02;
+  }
+  function playFromBuffer(p){
+    var S=spdToRate(p.spd);                    // vitesse demandee, 1 = normale
+    var P=Number(p.pit)||0;                    // pitch en demi-tons, independant
+    var b0=(p.t-capStart)/capRate;
+    var slice=padSlice(p);
+    var wall=slice>0?slice/S:Math.min(12,(capBuf.duration-b0)*capRate/S);
+    var t=ac.currentTime+0.005;
+    stopBuf();
+    if(P===0){
+      var src=ac.createBufferSource();
+      src.buffer=capBuf; src.playbackRate.value=S/capRate;
+      src.connect(vidBus); src.start(t,b0, slice>0?(slice/capRate):undefined);
+      bufVoices.push(src);
+      return;
+    }
+    // pitch independant : grains superposes, la position avance a la vitesse S
+    var G=0.09, H=G/2, r=(S*Math.pow(2,P/12))/capRate, adv=S*H/capRate;
+    var n=Math.min(400,Math.ceil(wall/H)), pos=b0;
+    for(var i=0;i<n;i++){
+      if(pos<0||pos>=capBuf.duration-G*r) break;
+      var g=ac.createGain(), when=t+i*H;
+      g.gain.setValueAtTime(0.0001,when);
+      g.gain.linearRampToValueAtTime(1,when+G*0.25);
+      g.gain.setValueAtTime(1,when+G*0.6);
+      g.gain.linearRampToValueAtTime(0.0001,when+G);
+      g.connect(vidBus);
+      var s2=ac.createBufferSource();
+      s2.buffer=capBuf; s2.playbackRate.value=r; s2.connect(g);
+      s2.start(when,pos,G*r); s2.stop(when+G+0.02);
+      bufVoices.push(s2);
+      pos+=adv;
+    }
   }
 
   /* =======================================================================
@@ -739,6 +882,12 @@
     if(!fromSeq) select(i);
     flash(i);
     if(state.sc.on && state.sc.src===i) scFire();
+    if(inBuffer(p)){
+      playFromBuffer(p);
+      if(yt&&yt.seekTo){ try{ yt.seekTo(p.t,true); yt.playVideo(); }catch(e){} }  // l'image suit
+      if(!fromSeq) record(i);
+      return;
+    }
     if(!yt||!yt.seekTo) return;
     clearTimeout(stopTimer); stopTimer=null; lastPad=i;
     try{ yt.setPlaybackRate(snapRate(padRate(p))); }catch(e){}
@@ -819,6 +968,16 @@
     if(msg) $("tempoInfo").textContent=msg;
     buildSteps(); save();
   }
+  $("capBtn").addEventListener("click",startCapture);
+  $("capStop").addEventListener("click",stopCapture);
+  $("capClear").addEventListener("click",clearCapture);
+  $("edPitch").addEventListener("input",function(){
+    pads()[sel].pit=parseFloat(this.value)||0;
+    $("edPitchV").textContent=pads()[sel].pit.toFixed(1).replace(".",",")+" demi-ton"+
+      (Math.abs(pads()[sel].pit)>=2?"s":"");
+    save();
+  });
+
   $("tapBtn").addEventListener("click",function(){
     var now=performance.now();
     if(taps.length&&now-taps[taps.length-1]>2500) taps=[];
@@ -1039,6 +1198,9 @@
     $("edRate").value=String(p.spd||0);
     $("edRateV").textContent=fmtSpd(p.spd);
     $("edRateReal").textContent="le lecteur jouera "+snapRate(padRate(p)).toFixed(2).replace(".",",")+"×";
+    $("edPitch").value=String(p.pit||0);
+    $("edPitchV").textContent=(Number(p.pit)||0).toFixed(1).replace(".",",")+" demi-ton"+
+      (Math.abs(Number(p.pit)||0)>=2?"s":"");
     paintSteps();
   }
   function paintAll(){ buildSteps(); select(sel); paintBanks(); paintRack(); }
@@ -1071,6 +1233,7 @@
           var m=(p.rate===""||p.rate==null)?1:Number(p.rate);
           p.spd=+(10*Math.log(m)/Math.log(2)).toFixed(1);
         }
+        if(p.pit==null) p.pit=0;
         delete p.rate;
       });
     });
@@ -1199,7 +1362,8 @@
   $("scSrc").addEventListener("change",function(){ state.sc.src=parseInt(this.value,10); paintRack(); save(); });
   $("scTargets").addEventListener("change",function(){ state.sc.targets=this.value; save(); });
   $("vidVol").addEventListener("input",function(){ state.vidVol=parseFloat(this.value);
-    $("vidVolV").textContent=Math.round(state.vidVol*100)+" %"; save(); });
+    $("vidVolV").textContent=Math.round(state.vidVol*100)+" %";
+    if(vidBus) vidBus.gain.value=state.vidVol; save(); });
   $("drVol").addEventListener("input",function(){ state.drVol=parseFloat(this.value);
     $("drVolV").textContent=Math.round(state.drVol*100)+" %";
     if(drumBus) drumBus.gain.value=state.drVol; save(); });
@@ -1277,7 +1441,7 @@
   });
 
   /* démarrage */
-  buildPads(); buildRack(); buildSteps(); syncControls(); paintBanks(); select(0);
+  buildPads(); buildRack(); buildSteps(); syncControls(); paintBanks(); select(0); capState();
   (function boot(){
     var last=null;
     try{
