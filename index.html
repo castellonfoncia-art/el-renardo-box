@@ -240,8 +240,9 @@
             <select id="edSlice"></select>
           </div>
           <div class="ctl">
-            <label for="edRate">Vitesse</label>
-            <select id="edRate"></select>
+            <label for="edRate">Vitesse <span class="val" id="edRateV">0,0 — 1,00×</span></label>
+            <input type="range" id="edRate" min="-10" max="10" step="0.1" value="0">
+            <span class="mono" id="edRateReal">le lecteur jouera 1,00×</span>
           </div>
         </div>
         <div class="nudge">
@@ -420,12 +421,11 @@
   var SLICES=[["","Globale"],[0,"Sans coupure"],[0.1,"0,10 s"],[0.15,"0,15 s"],[0.2,"0,20 s"],
               [0.3,"0,30 s"],[0.4,"0,40 s"],[0.5,"0,50 s"],[0.75,"0,75 s"],[1,"1 s"],
               [1.5,"1,5 s"],[2,"2 s"],[4,"4 s"],[8,"8 s"]];
-  var RATES=[["","Globale"],[0.25,"0,25×"],[0.5,"0,5×"],[0.75,"0,75×"],[1,"1×"],[1.25,"1,25×"],[1.5,"1,5×"],[2,"2×"]];
   var BANKS=["A","B","C","D"];
   var DRUM_BASE=100;
 
   function blankPads(){
-    var a=[];for(var i=0;i<16;i++)a.push({t:0,name:"Pad "+(i+1),slice:"",rate:""});return a;
+    var a=[];for(var i=0;i<16;i++)a.push({t:0,name:"Pad "+(i+1),slice:"",spd:0});return a;
   }
   var state={
     videoId:"", bank:0, banks:[blankPads(),blankPads(),blankPads(),blankPads()],
@@ -668,6 +668,12 @@
      4. LECTEUR YOUTUBE
      ======================================================================= */
   var yt=null, ytReady=false, pending=null, stopTimer=null;
+  var ytRates=[0.25,0.5,0.75,1,1.25,1.5,1.75,2];   // remplacee par la vraie liste au chargement
+  function snapRate(r){
+    var best=ytRates[0], d=Infinity;
+    ytRates.forEach(function(x){ var e=Math.abs(x-r); if(e<d){ d=e; best=x; } });
+    return best;
+  }
   window.onYouTubeIframeAPIReady=function(){
     ytReady=true; if(pending){ var v=pending; pending=null; loadVideo(v); }
   };
@@ -682,7 +688,13 @@
       events:{
         onReady:function(){
           duration=yt.getDuration()||0;
+          try{
+            var av=yt.getAvailablePlaybackRates();
+            if(av&&av.length) ytRates=av;
+          }catch(e){}
           if(!padsHaveTimes()) spread();
+          $("edRateReal").textContent="le lecteur jouera "+
+            snapRate(padRate(pads()[sel])).toFixed(2).replace(".",",")+"×";
           paintAll(); save();
         },
         onStateChange:function(e){
@@ -707,7 +719,14 @@
      ======================================================================= */
   var lastPad=-1;
   function padSlice(p){ return p.slice===""?state.gSlice:Number(p.slice); }
-  function padRate(p){ return p.rate===""?1:Number(p.rate); }
+  // curseur -10..+10 : 0 = vitesse normale, +10 = double, -10 = moitié.
+  // Le lecteur YouTube n'accepte que 0,25 à 2, on borne donc la valeur envoyée.
+  function spdToRate(v){ return Math.min(2,Math.max(0.25,Math.pow(2,(Number(v)||0)/10))); }
+  function padRate(p){ return spdToRate(p.spd); }
+  function fmtSpd(v){
+    v=Number(v)||0;
+    return v.toFixed(1).replace(".",",")+" — "+spdToRate(v).toFixed(2).replace(".",",")+"×";
+  }
 
   function hit(i,fromSeq){
     if(i>=DRUM_BASE){ hitDrum(i-DRUM_BASE,fromSeq); return; }
@@ -722,7 +741,7 @@
     if(state.sc.on && state.sc.src===i) scFire();
     if(!yt||!yt.seekTo) return;
     clearTimeout(stopTimer); stopTimer=null; lastPad=i;
-    try{ yt.setPlaybackRate(padRate(p)); }catch(e){}
+    try{ yt.setPlaybackRate(snapRate(padRate(p))); }catch(e){}
     yt.seekTo(p.t,true); yt.playVideo();
     if(state.mode==="slice"){
       var s=padSlice(p);
@@ -1017,7 +1036,9 @@
     $("edName").value=p.name;
     $("edStamp").textContent=fmt(p.t);
     $("edSlice").value=String(p.slice);
-    $("edRate").value=String(p.rate);
+    $("edRate").value=String(p.spd||0);
+    $("edRateV").textContent=fmtSpd(p.spd);
+    $("edRateReal").textContent="le lecteur jouera "+snapRate(padRate(p)).toFixed(2).replace(".",",")+"×";
     paintSteps();
   }
   function paintAll(){ buildSteps(); select(sel); paintBanks(); paintRack(); }
@@ -1044,6 +1065,15 @@
     try{ localStorage.setItem("padvideo:"+state.videoId,JSON.stringify(state)); }catch(e){}
   }
   function adopt(s){
+    (s.banks||[]).forEach(function(bk){
+      bk.forEach(function(p){
+        if(p.spd==null){                       // ancien format : multiplicateur -> valeur de curseur
+          var m=(p.rate===""||p.rate==null)?1:Number(p.rate);
+          p.spd=+(10*Math.log(m)/Math.log(2)).toFixed(1);
+        }
+        delete p.rate;
+      });
+    });
     state.banks=s.banks; state.seq=s.seq||[[],[],[],[]];
     state.gSlice=s.gSlice==null?0.5:s.gSlice; state.mode=s.mode||"slice";
     state.bpm=s.bpm||90; state.bars=s.bars||2; state.quant=s.quant==null?1:s.quant;
@@ -1094,7 +1124,6 @@
     $("edSlice").appendChild(new Option(o[1],String(o[0])));
     if(o[0]!=="") $("gSlice").appendChild(new Option(o[1],String(o[0])));
   });
-  RATES.forEach(function(o){ $("edRate").appendChild(new Option(o[1],String(o[0]))); });
   FAMILIES.forEach(function(f,i){ $("scSrc").appendChild(new Option("Drum — "+f.name,String(DRUM_BASE+i))); });
   for(var pi=0;pi<16;pi++) $("scSrc").appendChild(new Option("Pad vidéo "+(pi+1),String(pi)));
 
@@ -1108,7 +1137,13 @@
 
   $("edName").addEventListener("input",function(){ pads()[sel].name=this.value||("Pad "+(sel+1)); paintPads(); save(); });
   $("edSlice").addEventListener("change",function(){ pads()[sel].slice=this.value===""?"":Number(this.value); save(); });
-  $("edRate").addEventListener("change",function(){ pads()[sel].rate=this.value===""?"":Number(this.value); save(); });
+  $("edRate").addEventListener("input",function(){
+    pads()[sel].spd=parseFloat(this.value)||0;
+    $("edRateV").textContent=fmtSpd(pads()[sel].spd);
+    $("edRateReal").textContent="le lecteur jouera "+
+      snapRate(padRate(pads()[sel])).toFixed(2).replace(".",",")+"×";
+    save();
+  });
   Array.prototype.forEach.call(document.querySelectorAll("[data-nudge]"),function(b){
     b.addEventListener("click",function(){
       var p=pads()[sel];
